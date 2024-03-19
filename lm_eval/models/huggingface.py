@@ -2,7 +2,7 @@ import copy
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple, Union
+from typing import List, Literal, Optional, Tuple, Union, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -34,15 +34,14 @@ from lm_eval.models.utils import (
     stop_sequences_criteria,
 )
 
-
 eval_logger = utils.eval_logger
 
 
 def _get_accelerate_args(
-    device_map_option: Optional[str] = "auto",
-    max_memory_per_gpu: Optional[Union[int, str]] = None,
-    max_cpu_memory: Optional[Union[int, str]] = None,
-    offload_folder: Optional[str] = "./offload",
+        device_map_option: Optional[str] = "auto",
+        max_memory_per_gpu: Optional[Union[int, str]] = None,
+        max_cpu_memory: Optional[Union[int, str]] = None,
+        offload_folder: Optional[str] = "./offload",
 ) -> dict:
     """Returns the kwargs needed to apply `accelerate` in `AutoModel.from_pretrained`."""
     max_memory = {}
@@ -76,41 +75,45 @@ class HFLM(TemplateLM):
     _DEFAULT_MAX_LENGTH = 2048
 
     def __init__(
-        self,
-        pretrained: Optional[Union[str, transformers.PreTrainedModel]] = "gpt2",
-        backend: Optional[Literal["default", "causal", "seq2seq"]] = "default",
-        # override whether the model should be treated as decoder-only (causal) or encoder-decoder (seq2seq)
-        revision: Optional[str] = "main",
-        subfolder: Optional[str] = None,
-        tokenizer: Optional[
-            Union[
-                str,
-                transformers.PreTrainedTokenizer,
-                transformers.PreTrainedTokenizerFast,
-            ]
-        ] = None,
-        truncation: Optional[bool] = False,
-        logits_cache: bool = True,
-        max_length: Optional[int] = None,
-        device: Optional[str] = "cuda",
-        dtype: Optional[Union[str, torch.dtype]] = "auto",
-        batch_size: Optional[Union[int, str]] = 1,
-        max_batch_size: Optional[int] = 64,
-        trust_remote_code: Optional[bool] = False,
-        use_fast_tokenizer: Optional[bool] = True,
-        add_bos_token: Optional[bool] = False,
-        # arguments used for splitting a model across GPUs naively.
-        # only used if `parallelize=True`.
-        parallelize: Optional[bool] = False,
-        device_map_option: Optional[str] = "auto",
-        max_memory_per_gpu: Optional[Union[int, str]] = None,
-        max_cpu_memory: Optional[Union[int, str]] = None,
-        offload_folder: Optional[Union[str, os.PathLike]] = "./offload",
-        # PEFT and quantization options
-        peft: Optional[str] = None,
-        autogptq: Optional[Union[bool, str]] = False,
-        prefix_token_id: Optional[int] = None,
-        **kwargs,
+            self,
+            pretrained: Optional[Union[str, transformers.PreTrainedModel]] = "gpt2",
+            backend: Optional[Literal["default", "causal", "seq2seq"]] = "default",
+            # override whether the model should be treated as decoder-only (causal) or encoder-decoder (seq2seq)
+            checkpoint: Optional[str] = None,
+            revision: Optional[str] = "main",
+            config_pretrained: Optional[str] = None,
+            subfolder: Optional[str] = None,
+            tokenizer: Optional[
+                Union[
+                    str,
+                    transformers.PreTrainedTokenizer,
+                    transformers.PreTrainedTokenizerFast,
+                ]
+            ] = None,
+            truncation: Optional[bool] = False,
+            logits_cache: bool = True,
+            max_length: Optional[int] = None,
+            device: Optional[str] = "cuda",
+            dtype: Optional[Union[str, torch.dtype]] = "auto",
+            batch_size: Optional[Union[int, str]] = 1,
+            max_batch_size: Optional[int] = 64,
+            trust_remote_code: Optional[bool] = False,
+            use_fast_tokenizer: Optional[bool] = True,
+            add_bos_token: Optional[bool] = False,
+            # arguments used for splitting a model across GPUs naively.
+            # only used if `parallelize=True`.
+            parallelize: Optional[bool] = False,
+            use_accelerate: Optional[bool] = False,
+            device_map_option: Optional[str] = "auto",
+            max_memory_per_gpu: Optional[Union[int, str]] = None,
+            max_cpu_memory: Optional[Union[int, str]] = None,
+            offload_folder: Optional[Union[str, os.PathLike]] = "./offload",
+            # PEFT and quantization options
+            peft: Optional[str] = None,
+            load_in_8bit: Optional[bool] = False,
+            prefix_token_id: Optional[int] = None,
+            autogptq: Optional[Union[bool, str]] = False,
+            **kwargs,
     ) -> None:
         super().__init__()
 
@@ -141,8 +144,7 @@ class HFLM(TemplateLM):
                 )
 
         else:
-            assert isinstance(device, str)
-            assert isinstance(pretrained, str)
+            assert isinstance(pretrained, str) or (isinstance(checkpoint, str) and isinstance(config_pretrained, str))
             assert isinstance(batch_size, (int, str))
 
             gpus = torch.cuda.device_count()
@@ -162,7 +164,7 @@ class HFLM(TemplateLM):
                     self._device = torch.device(device)
                     eval_logger.info(f"Using device '{device}'")
                     if device in ("mps", "mps:0") and version.parse(
-                        torch.__version__
+                            torch.__version__
                     ) < version.parse("2.1"):
                         raise RuntimeError(
                             f"mps requires torch >= 2.1. You have {torch.__version__}"
@@ -187,31 +189,86 @@ class HFLM(TemplateLM):
             revision = revision + ("/" + subfolder if subfolder is not None else "")
 
             self._get_config(
-                pretrained,
+                config_pretrained if config_pretrained is not None else pretrained,
                 revision=revision,
                 trust_remote_code=trust_remote_code,
             )
-
         # determine which of 'causal' and 'seq2seq' backends to use
         self._get_backend(
             config=self.config, backend=backend, trust_remote_code=trust_remote_code
         )
 
-        # if we passed `pretrained` as a string, initialize our model now
-        if isinstance(pretrained, str):
-            self._create_model(
-                pretrained=pretrained,
+        if checkpoint is not None:
+            pruned_dict = torch.load(checkpoint, map_location='cpu')
+            if 'tokenizer' in pruned_dict:
+                self.tokenizer = pruned_dict['tokenizer']
+            else:
+                self.tokenizer = self._create_auto_tokenizer(
+                    pretrained=config_pretrained,
+                    revision=revision,
+                    subfolder=subfolder,
+                    tokenizer=tokenizer,
+                )
+            self._model = pruned_dict['model']
+            print("Load from Pruned Model: {}".format(checkpoint))
+            self.model.half()
+            # note: peft_path can be different than pretrained model path
+            model_kwargs = {}
+            if use_accelerate:
+                model_kwargs = _get_accelerate_args(
+                    device_map_option,
+                    max_memory_per_gpu,
+                    max_cpu_memory,
+                    offload_folder,
+                )
+            model_kwargs["load_in_8bit"] = load_in_8bit
+
+            def _get_dtype(
+                    dtype: Union[str, torch.dtype], config: Optional[transformers.AutoConfig] = None
+            ) -> torch.dtype:
+                """Converts `dtype` from `str` to torch.dtype when possible."""
+                if dtype is None and config is not None:
+                    _torch_dtype = config.torch_dtype
+                elif isinstance(dtype, str) and dtype != "auto":
+                    # Convert `str` args torch dtype: `float16` -> `torch.float16`
+                    _torch_dtype = getattr(torch, dtype)
+                else:
+                    _torch_dtype = dtype
+                return _torch_dtype
+            if peft is not None:
+                self._model = self._create_auto_model_peft(
+                    model=self.model,
+                    peft=peft,
+                    revision=revision,
+                    subfolder=subfolder,
+                    torch_dtype=_get_dtype(dtype, self._config),
+                    **model_kwargs,
+                )
+            self.model.eval()
+            torch.set_grad_enabled(False)
+        else:
+            # if we passed `pretrained` as a string, initialize our model now
+            if isinstance(pretrained, str):
+                self._create_model(
+                    pretrained=pretrained,
+                    revision=revision,
+                    dtype=dtype,
+                    trust_remote_code=trust_remote_code,
+                    parallelize=parallelize,
+                    device_map_option=device_map_option,
+                    max_memory_per_gpu=max_memory_per_gpu,
+                    max_cpu_memory=max_cpu_memory,
+                    offload_folder=offload_folder,
+                    peft=peft,
+                    autogptq=autogptq,
+                    **kwargs,
+                )
+            self._create_tokenizer(
+                pretrained,
+                tokenizer,
                 revision=revision,
-                dtype=dtype,
                 trust_remote_code=trust_remote_code,
-                parallelize=parallelize,
-                device_map_option=device_map_option,
-                max_memory_per_gpu=max_memory_per_gpu,
-                max_cpu_memory=max_cpu_memory,
-                offload_folder=offload_folder,
-                peft=peft,
-                autogptq=autogptq,
-                **kwargs,
+                use_fast_tokenizer=use_fast_tokenizer,
             )
 
         # access self._model through self.model property outside this method
@@ -232,14 +289,6 @@ class HFLM(TemplateLM):
                         "Failed to place model onto specified device. This may be because the model is quantized via `bitsandbytes` or `device_map` is provided. If the desired GPU is being used, this message is safe to ignore."
                     )
 
-        self._create_tokenizer(
-            pretrained,
-            tokenizer,
-            revision=revision,
-            trust_remote_code=trust_remote_code,
-            use_fast_tokenizer=use_fast_tokenizer,
-        )
-
         self.truncation = truncation
         self.logits_cache = logits_cache
         self.vocab_size = self.tokenizer.vocab_size
@@ -255,8 +304,8 @@ class HFLM(TemplateLM):
                 # Qwen's trust_remote_code tokenizer does not allow for adding special tokens
                 self.tokenizer.pad_token = "<|endoftext|>"
             elif (
-                self.tokenizer.__class__.__name__ == "RWKVWorldTokenizer"
-                or self.tokenizer.__class__.__name__ == "Rwkv5Tokenizer"
+                    self.tokenizer.__class__.__name__ == "RWKVWorldTokenizer"
+                    or self.tokenizer.__class__.__name__ == "Rwkv5Tokenizer"
             ):
                 # The RWKV world tokenizer, does not allow for adding special tokens / setting the pad token (which is set as 0)
                 # The additional tokenizer name check is needed, as there exists rwkv4 models with neox tokenizer
@@ -311,11 +360,11 @@ class HFLM(TemplateLM):
                             f"Current run will proceed with {accelerator.num_processes} devices."
                         )
                     assert (
-                        accelerator.distributed_type
-                        in [
-                            DistributedType.FSDP,
-                            DistributedType.MULTI_GPU,
-                        ]
+                            accelerator.distributed_type
+                            in [
+                                DistributedType.FSDP,
+                                DistributedType.MULTI_GPU,
+                            ]
                     ), "Unsupported distributed type provided. Only DDP and FSDP are supported."
                     if accelerator.distributed_type == DistributedType.FSDP:
                         self._model = accelerator.prepare(self.model)
@@ -345,6 +394,50 @@ class HFLM(TemplateLM):
         eval_logger.info(
             f"Loglikelihood prefix token id used in evaluation: {self.prefix_token_id}"
         )
+    def _create_auto_tokenizer(
+            self,
+            *,
+            pretrained: str,
+            revision: str,
+            subfolder: str,
+            tokenizer: Optional[str] = None,
+            trust_remote_code: Optional[bool] = False,
+    ) -> transformers.PreTrainedTokenizer:
+        """Returns a pre-trained tokenizer from a pre-trained tokenizer configuration."""
+        tokenizer = self.AUTO_TOKENIZER_CLASS.from_pretrained(
+            pretrained if tokenizer is None else tokenizer,
+            revision=revision + ("/" + subfolder if subfolder is not None else ""),
+            trust_remote_code=trust_remote_code,
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+        return tokenizer
+
+    def _create_auto_model_peft(
+            self,
+            *,
+            model: transformers.PreTrainedModel,
+            peft: str,
+            revision: str,
+            subfolder: str,
+            device_map: Optional[Union[str, Mapping[str, Union[int, str, torch.device]]]] = None,
+            max_memory: Optional[dict] = None,
+            offload_folder: Optional[str] = None,
+            load_in_8bit: Optional[bool] = False,
+            trust_remote_code: Optional[bool] = False,
+            torch_dtype: Optional[Union[str, torch.dtype]] = None,
+    ):
+        model = PeftModel.from_pretrained(
+            model,
+            peft,
+            revision=revision + ("/" + subfolder if subfolder is not None else ""),
+            device_map=device_map,
+            max_memory=max_memory,
+            offload_folder=offload_folder,
+            load_in_8bit=load_in_8bit,
+            trust_remote_code=trust_remote_code,
+            torch_dtype=torch_dtype,
+        )
+        return model
 
     @property
     def config(self):
@@ -408,10 +501,10 @@ class HFLM(TemplateLM):
         return self._world_size
 
     def _get_backend(
-        self,
-        config: Union[transformers.PretrainedConfig, transformers.AutoConfig],
-        backend: Optional[Literal["default", "causal", "seq2seq"]] = "default",
-        trust_remote_code: Optional[bool] = False,
+            self,
+            config: Union[transformers.PretrainedConfig, transformers.AutoConfig],
+            backend: Optional[Literal["default", "causal", "seq2seq"]] = "default",
+            trust_remote_code: Optional[bool] = False,
     ) -> None:
         """
         Helper method during initialization.
@@ -432,15 +525,15 @@ class HFLM(TemplateLM):
         else:
             # determine and use the default HF backend for this model, based on its config + metadata.
             if (
-                getattr(config, "model_type")
-                in MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING_NAMES
+                    getattr(config, "model_type")
+                    in MODEL_FOR_SEQ_TO_SEQ_CAUSAL_LM_MAPPING_NAMES
             ):
                 # first check if model type is listed under seq2seq models, since some
                 # models like MBart are listed in both seq2seq and causal mistakenly in HF transformers.
                 # these special cases should be treated as seq2seq models.
                 self.AUTO_MODEL_CLASS = transformers.AutoModelForSeq2SeqLM
             elif (
-                getattr(self.config, "model_type") in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+                    getattr(self.config, "model_type") in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
             ):
                 self.AUTO_MODEL_CLASS = transformers.AutoModelForCausalLM
             else:
@@ -460,10 +553,10 @@ class HFLM(TemplateLM):
         return None
 
     def _get_config(
-        self,
-        pretrained: str,
-        revision: str = "main",
-        trust_remote_code: bool = False,
+            self,
+            pretrained: str,
+            revision: str = "main",
+            trust_remote_code: bool = False,
     ) -> None:
         self._config = transformers.AutoConfig.from_pretrained(
             pretrained,
@@ -472,23 +565,23 @@ class HFLM(TemplateLM):
         )
 
     def _create_model(
-        self,
-        pretrained: str,
-        revision: Optional[str] = "main",
-        dtype: Optional[Union[str, torch.dtype]] = "auto",
-        trust_remote_code: Optional[bool] = False,
-        # arguments used for splitting a model across GPUs naively.
-        # only used if `parallelize=True`.
-        # (accelerate naive PP (device_map) options)
-        parallelize: Optional[bool] = False,
-        device_map_option: Optional[str] = "auto",
-        max_memory_per_gpu: Optional[Union[int, str]] = None,
-        max_cpu_memory: Optional[Union[int, str]] = None,
-        offload_folder: Optional[str] = "./offload",
-        # PEFT and quantization options
-        peft: Optional[str] = None,
-        autogptq: Optional[Union[bool, str]] = False,
-        **kwargs,
+            self,
+            pretrained: str,
+            revision: Optional[str] = "main",
+            dtype: Optional[Union[str, torch.dtype]] = "auto",
+            trust_remote_code: Optional[bool] = False,
+            # arguments used for splitting a model across GPUs naively.
+            # only used if `parallelize=True`.
+            # (accelerate naive PP (device_map) options)
+            parallelize: Optional[bool] = False,
+            device_map_option: Optional[str] = "auto",
+            max_memory_per_gpu: Optional[Union[int, str]] = None,
+            max_cpu_memory: Optional[Union[int, str]] = None,
+            offload_folder: Optional[str] = "./offload",
+            # PEFT and quantization options
+            peft: Optional[str] = None,
+            autogptq: Optional[Union[bool, str]] = False,
+            **kwargs,
     ) -> None:
         """
         Initializes an HF or HF-compatible PreTrainedModel from scratch
@@ -528,7 +621,7 @@ class HFLM(TemplateLM):
         if not autogptq:
             if model_kwargs.get("load_in_4bit", None):
                 assert (
-                    transformers.__version__ >= "4.30.0"
+                        transformers.__version__ >= "4.30.0"
                 ), "load_in_4bit requires transformers >= 4.30.0"
             if transformers.__version__ >= "4.30.0":
                 if model_kwargs.get("load_in_4bit", None):
@@ -572,18 +665,18 @@ class HFLM(TemplateLM):
         return None
 
     def _create_tokenizer(
-        self,
-        pretrained: Union[str, transformers.PreTrainedModel],
-        tokenizer: Optional[
-            Union[
-                str,
-                transformers.PreTrainedTokenizer,
-                transformers.PreTrainedTokenizerFast,
-            ]
-        ],
-        revision: Optional[str] = "main",
-        trust_remote_code: Optional[bool] = False,
-        use_fast_tokenizer: Optional[bool] = True,
+            self,
+            pretrained: Union[str, transformers.PreTrainedModel],
+            tokenizer: Optional[
+                Union[
+                    str,
+                    transformers.PreTrainedTokenizer,
+                    transformers.PreTrainedTokenizerFast,
+                ]
+            ],
+            revision: Optional[str] = "main",
+            trust_remote_code: Optional[bool] = False,
+            use_fast_tokenizer: Optional[bool] = True,
     ) -> None:
         """
         Helper method during initialization.
@@ -624,10 +717,10 @@ class HFLM(TemplateLM):
         if requests:
             _, context_enc, continuation_enc = requests[pos]
             max_length = len(
-                (context_enc + continuation_enc)[-(self.max_length + 1) :][:-1]
+                (context_enc + continuation_enc)[-(self.max_length + 1):][:-1]
             )
-            max_context_enc = len(context_enc[-(self.max_length + 1) :])
-            max_cont_enc = len(continuation_enc[-(self.max_length + 1) :])
+            max_context_enc = len(context_enc[-(self.max_length + 1):])
+            max_cont_enc = len(continuation_enc[-(self.max_length + 1):])
         else:
             max_length = self.max_length
 
@@ -676,7 +769,7 @@ class HFLM(TemplateLM):
         return batch_size
 
     def tok_encode(
-        self, string: str, left_truncate_len=None, add_special_tokens=None
+            self, string: str, left_truncate_len=None, add_special_tokens=None
     ) -> List[int]:
         """ """
         if add_special_tokens is None:
@@ -695,11 +788,11 @@ class HFLM(TemplateLM):
         return encoding
 
     def tok_batch_encode(
-        self,
-        strings: List[str],
-        padding_side: str = "left",
-        left_truncate_len: int = None,
-        truncation: bool = False,
+            self,
+            strings: List[str],
+            padding_side: str = "left",
+            left_truncate_len: int = None,
+            truncation: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # encode a batch of strings. converts to tensors and pads automatically, unlike tok_encode.
         old_padding_side = self.tokenizer.padding_side
@@ -720,17 +813,21 @@ class HFLM(TemplateLM):
         if left_truncate_len:
             encoding["input_ids"] = encoding["input_ids"][:, -left_truncate_len:]
             encoding["attention_mask"] = encoding["attention_mask"][
-                :, -left_truncate_len:
-            ]
+                                         :, -left_truncate_len:
+                                         ]
         self.tokenizer.padding_side = old_padding_side
 
         return encoding["input_ids"], encoding["attention_mask"]
 
-    def tok_decode(self, tokens):
+    def tok_decode(self, tokens, skip_special_tokens=True):
         if self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM:
-            return self.tokenizer.decode(tokens)
+            return self.tokenizer.decode(
+                tokens, skip_special_tokens=skip_special_tokens
+            )
         elif self.AUTO_MODEL_CLASS == transformers.AutoModelForSeq2SeqLM:
-            return self.tokenizer.decode(tokens, skip_special_tokens=True)
+            return self.tokenizer.decode(
+                tokens, skip_special_tokens=skip_special_tokens
+            )
 
     def _model_call(self, inps, attn_mask=None, labels=None):
         """
@@ -786,18 +883,18 @@ class HFLM(TemplateLM):
         )
 
     def _select_cont_toks(
-        self, logits: torch.Tensor, contlen: int = None, inplen: int = None
+            self, logits: torch.Tensor, contlen: int = None, inplen: int = None
     ) -> torch.Tensor:
         if self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM:
             assert (
-                contlen and inplen
+                    contlen and inplen
             ), "Must pass input len and cont. len to select scored logits for causal LM"
             # discard right-padding.
             # also discard the input/context tokens. we'll only score continuations.
-            logits = logits[inplen - contlen : inplen]
+            logits = logits[inplen - contlen: inplen]
         elif self.AUTO_MODEL_CLASS == transformers.AutoModelForSeq2SeqLM:
             assert (
-                contlen and not inplen
+                    contlen and not inplen
             ), "Selecting scored logits for Seq2SeqLM requires only cont. len"
             # only discard right-padding.
             # the logits input to this fn only contain decoder-side tokens.
@@ -806,7 +903,7 @@ class HFLM(TemplateLM):
         return logits
 
     def loglikelihood_rolling(
-        self, requests: List[Instance], disable_tqdm: bool = False
+            self, requests: List[Instance], disable_tqdm: bool = False
     ) -> List[float]:
         loglikelihoods = []
 
@@ -819,14 +916,14 @@ class HFLM(TemplateLM):
             adaptive_batch_size = batch_size
 
         for (string,) in tqdm(
-            [req.args for req in requests], disable=(disable_tqdm or (self.rank != 0))
+                [req.args for req in requests], disable=(disable_tqdm or (self.rank != 0))
         ):
             rolling_token_windows = list(
                 map(
                     utils.make_disjoint_window,
                     utils.get_rolling_token_windows(
                         token_list=self.tok_encode(string),
-                        prefix_token=self.prefix_token_id,
+                        prefix_token=self.eot_token_id,
                         max_seq_len=self.max_length,
                         context_len=1,
                     ),
@@ -870,7 +967,7 @@ class HFLM(TemplateLM):
         if sched in self.batch_sizes:
             return self.batch_sizes[sched]
         if (len(self.batch_sizes) > 1) and (
-            self.batch_sizes[sched - 1] == self.max_batch_size
+                self.batch_sizes[sched - 1] == self.max_batch_size
         ):
             # if previous batch size is already maximal, skip recomputation
             self.batch_sizes[sched] = self.max_batch_size
@@ -883,10 +980,10 @@ class HFLM(TemplateLM):
         return self.batch_sizes[sched]
 
     def _loglikelihood_tokens(
-        self,
-        requests: List[Tuple[Tuple[str, str], List[int], List[int]]],
-        disable_tqdm: bool = False,
-        override_bs: int = None,
+            self,
+            requests: List[Tuple[Tuple[str, str], List[int], List[int]]],
+            disable_tqdm: bool = False,
+            override_bs: int = None,
     ) -> List[Tuple[float, bool]]:
         # TODO: implement some kind of efficient-request-middleware that lumps together requests with the same context
         res = []
@@ -916,7 +1013,7 @@ class HFLM(TemplateLM):
             sort_fn=_collate,
             group_by="contexts"
             if self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM
-            and self.logits_cache
+               and self.logits_cache
             else None,
             group_fn=_lookup_one_token_cont,
         )
@@ -934,8 +1031,8 @@ class HFLM(TemplateLM):
         batch_fn = (
             self._batch_scheduler
             if self.batch_size == "auto"
-            and n_reordered_requests > 0
-            and not override_bs
+               and n_reordered_requests > 0
+               and not override_bs
             else None
         )
 
@@ -975,14 +1072,14 @@ class HFLM(TemplateLM):
                 # when too long to fit in context, truncate from the left
                 if self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM:
                     inp = torch.tensor(
-                        (context_enc + continuation_enc)[-(self.max_length + 1) :][:-1],
+                        (context_enc + continuation_enc)[-(self.max_length + 1):][:-1],
                         dtype=torch.long,
                         device=self.device,
                     )
                     (inplen,) = inp.shape
                 elif self.AUTO_MODEL_CLASS == transformers.AutoModelForSeq2SeqLM:
                     inp = torch.tensor(
-                        (context_enc)[-self.max_length :],
+                        (context_enc)[-self.max_length:],
                         dtype=torch.long,
                         device=self.device,
                     )
@@ -992,7 +1089,7 @@ class HFLM(TemplateLM):
                     encoder_attns.append(torch.ones_like(inp))
 
                     cont = torch.tensor(
-                        (continuation_enc)[-self.max_length :],
+                        (continuation_enc)[-self.max_length:],
                         # TODO: left-shift these?
                         # TODO: our code assumes we never end up truncating conts for either model type
                         dtype=torch.long,
@@ -1045,7 +1142,7 @@ class HFLM(TemplateLM):
             )  # [batch, padding_length (inp or cont), vocab]
 
             for (request_str, ctx_tokens, _), logits, inplen, cont_toks in zip(
-                chunk, multi_logits, inplens, cont_toks_list
+                    chunk, multi_logits, inplens, cont_toks_list
             ):
                 # Slice to original seq length
                 contlen = len(cont_toks)
@@ -1070,10 +1167,10 @@ class HFLM(TemplateLM):
                 # batch along with matching continuation tokens and prompt strings.
                 # logits -> [1, seq, vocab]
                 for request_str, cont_toks, logits in re_ord.get_cache(
-                    req_str=request_str,
-                    cxt_toks=ctx_tokens,
-                    cont_toks=cont_toks,
-                    logits=logits,
+                        req_str=request_str,
+                        cxt_toks=ctx_tokens,
+                        cont_toks=cont_toks,
+                        logits=logits,
                 ):
                     cont_toks = torch.tensor(
                         cont_toks, dtype=torch.long, device=self.device
@@ -1099,7 +1196,7 @@ class HFLM(TemplateLM):
         return re_ord.get_original(res)
 
     def generate_until(
-        self, requests: List[Instance], disable_tqdm: bool = False
+            self, requests: List[Instance], disable_tqdm: bool = False
     ) -> List[str]:
         res = []
 
@@ -1173,7 +1270,7 @@ class HFLM(TemplateLM):
                     f"Expected `kwargs` to be of type `dict` but got {type(gen_kwargs)}"
                 )
             # add EOS token to stop sequences
-            eos = self.tok_decode(self.eot_token_id)
+            eos = self.tok_decode(self.eot_token_id, skip_special_tokens=False)
             if not until:
                 until = [eos]
             else:
@@ -1215,7 +1312,7 @@ class HFLM(TemplateLM):
             for cont_toks, context in zip(cont_toks_list, contexts):
                 # discard context + left-padding toks if using causal decoder-only LM
                 if self.AUTO_MODEL_CLASS == transformers.AutoModelForCausalLM:
-                    cont_toks = cont_toks[context_enc.shape[1] :]
+                    cont_toks = cont_toks[context_enc.shape[1]:]
 
                 s = self.tok_decode(cont_toks)
 
