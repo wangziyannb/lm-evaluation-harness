@@ -427,8 +427,9 @@ def get_git_commit_hash():
         git_hash = subprocess.check_output(["git", "describe", "--always"]).strip()
         git_hash = git_hash.decode()
     except (subprocess.CalledProcessError, FileNotFoundError):
+
         # FileNotFoundError occurs when git not installed on system
-        git_hash = get_commit_from_path(os.getcwd())  # git hash of repo if exists
+        git_hash = 0  # git hash of repo if exists
     return git_hash
 
 
