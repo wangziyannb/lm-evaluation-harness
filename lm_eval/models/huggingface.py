@@ -211,39 +211,14 @@ class HFLM(TemplateLM):
                 )
             self._model = pruned_dict['model']
             print("Load from Pruned Model: {}".format(checkpoint))
-            self.model.half()
+            # self.model.half()
             # note: peft_path can be different than pretrained model path
-            model_kwargs = {}
-            if use_accelerate:
-                model_kwargs = _get_accelerate_args(
-                    device_map_option,
-                    max_memory_per_gpu,
-                    max_cpu_memory,
-                    offload_folder,
-                )
-            model_kwargs["load_in_8bit"] = load_in_8bit
 
-            def _get_dtype(
-                    dtype: Union[str, torch.dtype], config: Optional[transformers.AutoConfig] = None
-            ) -> torch.dtype:
-                """Converts `dtype` from `str` to torch.dtype when possible."""
-                if dtype is None and config is not None:
-                    _torch_dtype = config.torch_dtype
-                elif isinstance(dtype, str) and dtype != "auto":
-                    # Convert `str` args torch dtype: `float16` -> `torch.float16`
-                    _torch_dtype = getattr(torch, dtype)
-                else:
-                    _torch_dtype = dtype
-                return _torch_dtype
             if peft is not None:
-                self._model = self._create_auto_model_peft(
-                    model=self.model,
-                    peft=peft,
-                    revision=revision,
-                    subfolder=subfolder,
-                    torch_dtype=_get_dtype(dtype, self._config),
-                    **model_kwargs,
+                self._model = PeftModel.from_pretrained(
+                    self._model, peft, revision=revision
                 )
+            self.model.half()
             self.model.eval()
             torch.set_grad_enabled(False)
         else:
@@ -404,7 +379,7 @@ class HFLM(TemplateLM):
             trust_remote_code: Optional[bool] = False,
     ) -> transformers.PreTrainedTokenizer:
         """Returns a pre-trained tokenizer from a pre-trained tokenizer configuration."""
-        tokenizer = self.AUTO_TOKENIZER_CLASS.from_pretrained(
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
             pretrained if tokenizer is None else tokenizer,
             revision=revision + ("/" + subfolder if subfolder is not None else ""),
             trust_remote_code=trust_remote_code,
@@ -430,7 +405,7 @@ class HFLM(TemplateLM):
             model,
             peft,
             revision=revision + ("/" + subfolder if subfolder is not None else ""),
-            device_map=device_map,
+            # device_map=device_map,
             max_memory=max_memory,
             offload_folder=offload_folder,
             load_in_8bit=load_in_8bit,
