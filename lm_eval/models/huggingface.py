@@ -76,10 +76,11 @@ class HFLM(TemplateLM):
 
     def __init__(
             self,
-            pretrained: Optional[Union[str, transformers.PreTrainedModel]] = "gpt2",
+            pretrained: Optional[Union[str, transformers.PreTrainedModel, PeftModel]] = "gpt2",
             backend: Optional[Literal["default", "causal", "seq2seq"]] = "default",
             # override whether the model should be treated as decoder-only (causal) or encoder-decoder (seq2seq)
             checkpoint: Optional[str] = None,
+            checkpoint_is_peft: bool = False,
             revision: Optional[str] = "main",
             config_pretrained: Optional[str] = None,
             subfolder: Optional[str] = None,
@@ -369,6 +370,7 @@ class HFLM(TemplateLM):
         eval_logger.info(
             f"Loglikelihood prefix token id used in evaluation: {self.prefix_token_id}"
         )
+
     def _create_auto_tokenizer(
             self,
             *,
