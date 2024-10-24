@@ -40,7 +40,6 @@ from lm_eval.caching.cache import load_from_cache, save_to_cache
 from lm_eval.filters import build_filter_ensemble
 from lm_eval.prompts import get_prompt
 
-
 ALL_OUTPUT_TYPES = [
     "loglikelihood",
     "multiple_choice",
@@ -156,7 +155,7 @@ class TaskConfig(dict):
         return cfg_dict
 
     def serialize_function(
-        self, value: Union[Callable, str], keep_callable=False
+            self, value: Union[Callable, str], keep_callable=False
     ) -> Union[Callable, str]:
         """Serializes a given function or string.
 
@@ -194,11 +193,11 @@ class Task(abc.ABC):
     OUTPUT_TYPE: Optional[OutputType] = None
 
     def __init__(
-        self,
-        data_dir: Optional[str] = None,
-        cache_dir: Optional[str] = None,
-        download_mode: Optional[datasets.DownloadMode] = None,
-        config: Optional[Mapping] = None,  # Union[dict, TaskConfig]
+            self,
+            data_dir: Optional[str] = None,
+            cache_dir: Optional[str] = None,
+            download_mode: Optional[datasets.DownloadMode] = None,
+            config: Optional[Mapping] = None,  # Union[dict, TaskConfig]
     ) -> None:
         """
         :param data_dir: str
@@ -231,10 +230,10 @@ class Task(abc.ABC):
         self._filters = [build_filter_ensemble("none", [["take_first", None]])]
 
     def download(
-        self,
-        data_dir: Optional[str] = None,
-        cache_dir: Optional[str] = None,
-        download_mode=None,
+            self,
+            data_dir: Optional[str] = None,
+            cache_dir: Optional[str] = None,
+            download_mode=None,
     ) -> None:
         """Downloads and returns the task dataset.
         Override this method to download the dataset from a custom API.
@@ -363,13 +362,13 @@ class Task(abc.ABC):
         pass
 
     def build_all_requests(
-        self,
-        *,
-        limit=None,
-        rank=None,
-        world_size=None,
-        cache_requests=False,
-        rewrite_requests_cache=False,
+            self,
+            *,
+            limit=None,
+            rank=None,
+            world_size=None,
+            cache_requests=False,
+            rewrite_requests_cache=False,
     ) -> None:
         """Build a set of Instances for a task, and store them in task.instances"""
 
@@ -398,9 +397,9 @@ class Task(abc.ABC):
 
         # process all documents when caching is specified for simplicity
         if (
-            cache_requests
-            and (not cached_instances or rewrite_requests_cache)
-            and limit is not None
+                cache_requests
+                and (not cached_instances or rewrite_requests_cache)
+                and limit is not None
         ):
             limit = None
 
@@ -411,8 +410,8 @@ class Task(abc.ABC):
         num_docs = len(doc_id_docs)
 
         for doc_id, doc in tqdm(
-            doc_id_docs,
-            total=num_docs,
+                doc_id_docs,
+                total=num_docs,
         ):
             # sample fewshot context #TODO: need to offset doc_id by rank now!
             fewshot_ctx = self.fewshot_context(
@@ -517,11 +516,11 @@ class Task(abc.ABC):
 
     @utils.positional_deprecated
     def fewshot_context(
-        self,
-        doc,
-        num_fewshot,
-        rnd=random.Random(1234),
-        description=None,
+            self,
+            doc,
+            num_fewshot,
+            rnd=random.Random(1234),
+            description=None,
     ):
         """Returns a fewshot context string that is made up of a prepended description
         (if provided), the `num_fewshot` number of examples, and an appended prompt example.
@@ -565,13 +564,13 @@ class Task(abc.ABC):
                 fewshotex = [x for x in fewshotex if x != doc][:num_fewshot]
 
             labeled_examples = (
-                "\n\n".join(
-                    [
-                        self.doc_to_text(doc) + self.doc_to_target(doc)
-                        for doc in fewshotex
-                    ]
-                )
-                + "\n\n"
+                    "\n\n".join(
+                        [
+                            self.doc_to_text(doc) + self.doc_to_target(doc)
+                            for doc in fewshotex
+                        ]
+                    )
+                    + "\n\n"
             )
 
         example = self.doc_to_text(doc)
@@ -644,7 +643,7 @@ class Task(abc.ABC):
             )
 
     def doc_iterator(
-        self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1
+            self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1
     ) -> Iterator[Tuple[int, Any]]:
         limit = int(limit) if limit else None
         doc_iterator = utils.create_iterator(
@@ -662,11 +661,11 @@ class ConfigurableTask(Task):
     CONFIG = None
 
     def __init__(
-        self,
-        data_dir=None,
-        cache_dir=None,
-        download_mode=None,
-        config: Optional[dict] = None,
+            self,
+            data_dir=None,
+            cache_dir=None,
+            download_mode=None,
+            config: Optional[dict] = None,
     ) -> None:  # TODO no super() call here
         # Get pre-configured attributes
         self._config = self.CONFIG
@@ -728,11 +727,11 @@ class ConfigurableTask(Task):
                     key: metric_config[key]
                     for key in metric_config
                     if key
-                    not in ["metric", "aggregation", "higher_is_better", "hf_evaluate"]
+                       not in ["metric", "aggregation", "higher_is_better", "hf_evaluate"]
                 }
                 hf_evaluate_metric = (
-                    "hf_evaluate" in metric_config
-                    and metric_config["hf_evaluate"] is True
+                        "hf_evaluate" in metric_config
+                        and metric_config["hf_evaluate"] is True
                 )
 
                 if self.config.process_results is not None:
@@ -854,7 +853,7 @@ class ConfigurableTask(Task):
                 delimiter_has_whitespace = (
                     True
                     if self.config.target_delimiter.rstrip()
-                    != self.config.target_delimiter
+                       != self.config.target_delimiter
                     else False
                 )
 
@@ -871,6 +870,7 @@ class ConfigurableTask(Task):
         self.dataset = datasets.load_dataset(
             path=self.DATASET_PATH,
             name=self.DATASET_NAME,
+            trust_remote_code=True,
             **dataset_kwargs if dataset_kwargs is not None else {},
         )
 
@@ -1057,9 +1057,9 @@ class ConfigurableTask(Task):
                 if target_string.isdigit() and self._config.doc_to_choice is not None:
                     return ast.literal_eval(target_string)
                 elif (
-                    len(target_string) >= 2
-                    and (target_string[0] == "[")
-                    and (target_string[-1] == "]")
+                        len(target_string) >= 2
+                        and (target_string[0] == "[")
+                        and (target_string[-1] == "]")
                 ):
                     try:
                         return ast.literal_eval(target_string)
@@ -1107,7 +1107,7 @@ class ConfigurableTask(Task):
             raise TypeError
 
     def construct_requests(
-        self, doc: dict, ctx: str, **kwargs
+            self, doc: dict, ctx: str, **kwargs
     ) -> Union[List[Instance], Instance]:
         if self.OUTPUT_TYPE == "loglikelihood":
             arguments = (ctx, self.doc_to_target(doc))
@@ -1207,8 +1207,8 @@ class ConfigurableTask(Task):
             completion_len = np.array([float(len(i)) for i in choices])
 
             if (
-                2 * len(choices) == len(lls)
-                and "acc_mutual_info" in self._metric_fn_list.keys()
+                    2 * len(choices) == len(lls)
+                    and "acc_mutual_info" in self._metric_fn_list.keys()
             ):
                 # then we are doing mutual info.
                 # this stores the "dryrun" / unconditional answer loglikelihoods
@@ -1322,7 +1322,7 @@ class ConfigurableTask(Task):
                                     **self._metric_fn_kwargs[metric],
                                 )
                             except (
-                                TypeError
+                                    TypeError
                             ):  # TODO: this is hacky and I don't want to do it
                                 result_score = self._metric_fn_list[metric](
                                     [gold_option, result]
