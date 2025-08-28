@@ -57,7 +57,7 @@ filter_list:
   name: flexible-extract
 generation_kwargs:
   do_sample: false
-#  temperature: 0.7
+  temperature: 0.7
   until:
   - 'Q:'
   - </s>
@@ -80,5 +80,5 @@ metric_list:
 num_fewshot: 8
 output_type: generate_until
 repeats: 1
-task: gsm8k_cot
+task: gsm8k_cot_ori
 test_split: test
