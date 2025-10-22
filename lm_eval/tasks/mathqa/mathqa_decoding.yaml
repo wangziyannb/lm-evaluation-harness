@@ -38,7 +38,7 @@ metadata:
 generation_kwargs:
   do_sample: true
   temperature: 0.6
-  max_gen_toks: 2048
+  max_gen_toks: 4096
   until:
   - 'Q:'
   - </s>
